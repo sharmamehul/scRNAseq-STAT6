@@ -1,0 +1,1206 @@
+---
+title: "STAT6_HKpatient_snRNAseq"
+output: html_document
+---
+
+## Setup
+
+```{r}
+# set work directory
+
+library(dplyr)
+library(Seurat)
+library(patchwork)
+library(SingleCellExperiment)
+library(SingleR)
+library(cowplot)
+library(ggplot2)
+library(gridExtra)
+library(EnhancedVolcano)
+library(tidyverse)
+library(pals)
+set.seed(2)
+```
+
+### Import raw data
+
+```{r}
+hcp <- Read10X(data.dir = "C:/AMA/STAT6/RNAseq/HKseq/scRNAseq/daniel_4_samples_possible_hcp_gex-20220727T023632Z-001/daniel_4_samples_possible_hcp_gex/outs/filtered_feature_bc_matrix")
+hcp_pbmc <- CreateSeuratObject(counts = hcp, project = "S6P_HK", min.features = 200)
+hcp_pbmc[["percent.mt"]] <- PercentageFeatureSet(hcp_pbmc, pattern = "^MT-")
+hcp_pbmc[["percent.HBB"]] <- PercentageFeatureSet(hcp_pbmc, pattern = "^HBB")
+#plot1 <- FeatureScatter(hcp_pbmc, feature1 = "nFeature_RNA", feature2 = "percent.mt")
+#plot1 <- FeatureScatter(hcp_pbmc, feature1 = "nFeature_RNA", feature2 = "percent.HBB")
+#plot1 <- FeatureScatter(hcp_pbmc, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+#plot1
+hcp_pbmc <- subset(hcp_pbmc, subset = nFeature_RNA > 500 & nFeature_RNA < 5000 & percent.mt < 10 & percent.HBB < 0.25)
+counts <- GetAssayData(hcp_pbmc, assay = "RNA")
+counts <- counts[-(which(rownames(counts) %in% c('HBB','HBA1','HBA2','HBG2','HBG1','HBD'))),]
+counts <- counts[-grep("RPS",rownames(counts)),]
+counts <- counts[-grep("RPL",rownames(counts)),]
+counts <- counts[-grep("MT-",rownames(counts)),]
+counts <- counts[-grep("LINC",rownames(counts)),]
+hcp_pbmc <- subset(hcp_pbmc, features = rownames(counts))
+hcp_pbmc$subject <- "healthy"
+
+
+s6p <- Read10X(data.dir = "C:/AMA/STAT6/RNAseq/HKseq/scRNAseq/daniel_4_samples_possible_s6p_gex-20220727T022630Z-001/daniel_4_samples_possible_s6p_gex/outs/filtered_feature_bc_matrix")
+s6p_pbmc <- CreateSeuratObject(counts = s6p, project = "S6P_HK", min.features = 200)
+s6p_pbmc[["percent.mt"]] <- PercentageFeatureSet(s6p_pbmc, pattern = "^MT-")
+s6p_pbmc[["percent.HBB"]] <- PercentageFeatureSet(s6p_pbmc, pattern = "^HBB")
+#plot1 <- FeatureScatter(s6p_pbmc1, feature1 = "nFeature_RNA", feature2 = "percent.mt")
+#plot1 <- FeatureScatter(s6p_pbmc, feature1 = "nFeature_RNA", feature2 = "percent.HBB")
+#plot1 <- FeatureScatter(s6p_pbmc, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+#plot1
+s6p_pbmc <- subset(s6p_pbmc, subset = nFeature_RNA > 500 & nFeature_RNA < 5000 & percent.mt < 10 & percent.HBB < 0.25)
+counts <- GetAssayData(s6p_pbmc, assay = "RNA")
+counts <- counts[-(which(rownames(counts) %in% c('HBB','HBA1','HBA2','HBG2','HBG1','HBD'))),]
+counts <- counts[-grep("RPS",rownames(counts)),]
+counts <- counts[-grep("RPL",rownames(counts)),]
+counts <- counts[-grep("MT-",rownames(counts)),]
+counts <- counts[-grep("LINC",rownames(counts)),]
+s6p_pbmc <- subset(s6p_pbmc, features = rownames(counts))
+s6p_pbmc$subject <- "patient"
+
+
+comb <- merge(hcp_pbmc, y = c(s6p_pbmc), add.cell.ids = c("HC", "S6P"))
+comb <- FindVariableFeatures(comb)
+comb <- ScaleData(comb)
+comb <- RunPCA(comb)
+comb <- RunUMAP(comb, dims = 1:20)
+#comb <- RunTSNE(comb)
+comb <- FindNeighbors(comb)
+comb <- FindClusters(comb)
+
+DimPlot(comb, label = T, repel = F, label.size = 4, split.by = "subject")
+
+comb.sc <- as.SingleCellExperiment(comb, assay = "RNA")
+nh.ref <- celldex::NovershternHematopoieticData()
+#im.ref <- celldex::DatabaseImmuneCellExpressionData()
+
+pred.nh <- SingleR(test = comb.sc, ref = nh.ref, labels = nh.ref$label.main)
+pred.nh.f <- SingleR(test = comb.sc, ref = nh.ref, labels = nh.ref$label.fine)
+if (identical(rownames(pred.nh), colnames(comb.sc))) {
+  comb.sc$NH <- pred.nh$labels
+  comb.sc$NH.fine <- pred.nh.f$labels
+}
+ct <- data.frame(cbind(NH = comb.sc$NH,
+                       NH.fine = comb.sc$NH.fine)) 
+rownames(ct) <- colnames(comb)
+comb <- AddMetaData(comb, ct)
+
+#pred.im <- SingleR(test = comb.sc, ref = im.ref, labels = im.ref$label.main)
+#pred.im.f <- SingleR(test = comb.sc, ref = im.ref, labels = im.ref$label.fine)
+#if (identical(rownames(pred.im), colnames(comb.sc))) {
+#comb.sc$IM <- pred.im$labels
+#  comb.sc$IM.fine <- pred.im.f$labels
+#}
+#ct2 <- data.frame(cbind(IM = comb.sc$IM,
+#                       IM.fine = comb.sc$IM.fine)) 
+#rownames(ct2) <- colnames(comb)
+#comb <- AddMetaData(comb, ct2)
+
+comb$NH.fine[comb$NH.fine %in% c("Mature B cells class switched", "Mature B cells class able to switch")] <- "Mature B cells"
+comb$NH.fine[comb$NH.fine %in% c("CD4+ Central Memory", "CD4+ Effector Memory")] <- "CD4+ Memory"
+comb$NH.fine[comb$NH.fine %in% c("CD8+ Central Memory", "CD8+ Effector Memory", "CD8+ Effector Memory RA")] <- "CD8+ Memory"
+comb$NH.fine[comb$NH.fine %in% c("Erythroid_CD34- CD71+ GlyA-", "Erythroid_CD34- CD71+ GlyA+", "Erythroid_CD34- CD71- GlyA+", "Erythroid_CD34- CD71lo GlyA+", "Erythroid_CD34+ CD71+ GlyA-")] <- "Erythroid cells"
+#comb$NH.fine[comb$NH.fine %in% c("Mature NK cells_CD56- CD16+ CD3-", "Mature NK cells_CD56- CD16- CD3-", "Mature NK cells_CD56+ CD16+ CD3-")] <- "NK cells"
+comb$NH.fine[comb$NH.fine %in% c("Granulocytes (Neutrophilic Metamyelocytes)", "Granulocytes (Neutrophils)", "Basophils")] <- "Other Granulocytes"
+comb$NH.fine[comb$NH.fine %in% c("Colony Forming Unit-Granulocytes", "Colony Forming Unit-Megakaryocytic", "Colony Forming Unit-Monocytes", "Common myeloid progenitors", "Hematopoietic stem cells_CD133+ CD34dim", "Early B cells", "NK T cells", "Pro B cells", "Megakaryocytes")] <- "Progenitors"
+comb$NH.fine[comb$NH.fine %in% c("Naive CD8+ T cells")] <- "CD8T Naive"
+comb$NH.fine[comb$NH.fine %in% c("CD8+ Memory")] <- "Mem CD8T"
+
+comb$label <- comb$NH
+comb$label.fine <- comb$NH.fine
+
+#comb$label2 <- comb$IM
+#$label2.fine <- comb$IM.fine
+
+DimPlot(comb, group.by = "label.fine", label = T, repel = F, label.size = 4, split.by = "subject")
+
+data <- SplitObject(comb, split.by = "subject")
+#x <- table(data$healthy$IM.fine)
+#write.csv(x, "healthy_label_imfine.csv")
+
+#y <- table(data$patient$IM.fine)
+#write.csv(y, "patient_label_imfine.csv")
+
+
+comb <- RenameIdents(comb, `6` = "CD14 Mono", `8` = "CD14 Mono", `9` = "CD14 Mono")
+comb <- RenameIdents(comb, `14` = "Progenitors", `11` = "Progenitors")
+comb <- RenameIdents(comb, `1` = "CD4+ Mem", `5` = "CD4+ Mem", `15` = "CD4+ Mem", `16` = "CD4+ Mem")
+comb <- RenameIdents(comb, `18` = "DC1")
+comb <- RenameIdents(comb, `19` = "DC2")
+comb <- RenameIdents(comb, `10` = "CD8+ Mem", `4` = "CD8+ Mem", `12` = "CD8+ Mem")
+comb <- RenameIdents(comb, `0` = "Naive CD4+ T cells")
+comb <- RenameIdents(comb, `3` = "NK cells")
+comb <- RenameIdents(comb, `2` = "Naive B", `13` = "Naive B", `7` = "Naive B")
+comb <- RenameIdents(comb, `17` = "Other")
+
+comb$final.ident <- as.character(comb@active.ident)
+comb$final.ident[comb$label.fine == "NK cells"] <- "NK cells"
+comb@active.ident <- as.factor(comb$final.ident)
+
+comb$final.ident1 <- as.character(comb@active.ident)
+comb$final.ident1[comb$label.fine == "CD8T Naive"] <- "CD8T Naive"
+comb@active.ident <- as.factor(comb$final.ident1)
+
+comb$final.ident2 <- as.character(comb@active.ident)
+comb$final.ident2[comb$label.fine == "Mature B cells"] <- "Mem B cells"
+comb@active.ident <- as.factor(comb$final.ident2)
+
+comb$final.ident3 <- as.character(comb@active.ident)
+comb$final.ident3[comb$label.fine == "Naive B cells"] <- "Naive B"
+comb@active.ident <- as.factor(comb$final.ident3)
+
+comb$final.ident4 <- as.character(comb@active.ident)
+comb$final.ident4[comb$label.fine == "DC1"] <- "DC1"
+comb@active.ident <- as.factor(comb$final.ident4)
+
+comb$final.ident5 <- as.character(comb@active.ident)
+comb$final.ident5[comb$label.fine == "DC2"] <- "DC2"
+comb@active.ident <- as.factor(comb$final.ident5)
+
+memBmarkers <- subset(x = comb, subset = IGHE > 0 | IGHG1 > 0 | IGHG2 > 0 | IGHG3 > 0 | IGHG4 > 0, idents = "Naive B")
+comb$final.ident2[colnames(comb) %in% colnames(memBmarkers)] <- "Mem B cells"
+comb@active.ident <- as.factor(comb$final.ident2)
+
+comb <- RenameIdents(comb, `Naive B` = "B Naive cells")
+
+#comb <- RenameIdents(comb, `6` = "Mem B cells")
+#comb <- RenameIdents(comb, `3` = "Naive B")
+#comb$final.ident <- as.character(comb@active.ident)
+#comb$final.ident[comb$label == "NK cells"] <- "NK cells"
+
+#comb@active.ident <- as.factor(comb$final.ident)
+
+plot1 <- DimPlot(comb, split.by = "subject", label.size = 4)
+plot1[[1]]$layers[[1]]$aes_params$alpha <- 0.5
+plot1
+
+features <- c("STAT6", "XBP1", "MAL", "SOCS3", "IL4R", "GATA3", "IGHE", "IGHG3", "CD83", "CLECL1", "IL1B", "NLRP3", "CXCL8")
+exp_mat <- as.matrix(comb[["RNA"]]@data[features,])
+meta <- cbind(Ident = as.character(comb@active.ident), Subject = comb$subject) %>% 
+  cbind(., as.data.frame(t(exp_mat)))
+meta <- pivot_longer(meta, STAT6:CXCL8, names_to = "Gene", values_to = "Expression")
+head(meta)
+meta_summary <- meta %>%
+  group_by(Ident, Subject, Gene) %>%
+  summarise(Avg = mean(Expression),
+            Pct = sum(Expression > 0) / length(Expression) * 100) %>% 
+  filter(., !Ident %in% c("Other", "Progenitors")) %>% 
+  transform(., Ident = factor(Ident, levels = c("B Naive cells", "Mem B cells", "Naive CD4+ T cells", "CD4+ Mem", "CD8T Naive", "CD8+ Mem", "NK cells", "CD14 Mono", "DC1", "DC2"))) %>% 
+  transform(., Gene = factor(Gene, levels = features))
+
+dot_plot <- ggplot(meta_summary, aes(x = Gene, y = Subject)) +
+  geom_point(aes(size = Pct, fill = Avg), color="gray", shape=21) +
+  scale_size("% detected", range = c(0,6)) +
+  scale_fill_gradientn(colours = pals::kovesi.linear_bmy_10_95_c78(100),
+                       guide = guide_colorbar(ticks.colour = "black",
+                                              frame.colour = "black"),
+                       limits = c(0, 3),
+                       oob = scales::squish,
+                       name = "Average\nexpression") +
+  theme_bw() +
+  theme(axis.text.x = element_text(size = 10, angle = 45, hjust = 1, color="black"),
+        axis.text.y = element_text(size = 10, color="black"),
+        axis.title = element_blank(), 
+        strip.text = element_text(size = 9)) + 
+  facet_wrap(Ident ~ ., ncol = 1, strip.position = "right", 
+             labeller = labeller(Ident = label_wrap_gen(8)))
+
+dot_plot
+
+
+
+ scale_x_discrete(labels = function(x) 
+    stringr::str_wrap(x, width = 15))+
+
+
+DotPlot(comb, features = features, split.by = "subject", cols = c("blue", "red"), scale = TRUE, dot.scale = 6) + RotatedAxis()
+
+
+markers <- FindMarkers(comb, ident.1 = "patient", ident.2 = "healthy", group.by = "subject", subset.ident = "CD14 Mono", min.pct = 0.1, logfc.threshold = 0.0, test.use = "negbinom")
+write.csv(markers, "CD14_DE.csv")
+
+markers1 <- FindMarkers(comb, ident.1 = "patient", ident.2 = "healthy", group.by = "subject", subset.ident = "DC", min.pct = 0.1, logfc.threshold = 0.0, test.use = "negbinom")
+write.csv(markers1, "mDC_DE.csv")
+
+markers2 <- FindMarkers(comb, ident.1 = "patient", ident.2 = "healthy", group.by = "subject", subset.ident = "pDC", min.pct = 0.1, logfc.threshold = 0.0, test.use = "negbinom")
+write.csv(markers2, "pDC_DE.csv")
+
+markers3 <- FindMarkers(comb, ident.1 = "patient", ident.2 = "healthy", group.by = "subject", subset.ident = "CD4+ Mem", min.pct = 0.1, logfc.threshold = 0.0, test.use = "negbinom")
+write.csv(markers3, "MemCD4+_DE.csv")
+
+markers4 <- FindMarkers(comb, ident.1 = "patient", ident.2 = "healthy", group.by = "subject", subset.ident = "CD8+ Mem", min.pct = 0.1, logfc.threshold = 0.0, test.use = "negbinom")
+write.csv(markers4, "MemCD8+_DE.csv")
+
+markers5 <- FindMarkers(comb, ident.1 = "patient", ident.2 = "healthy", group.by = "subject", subset.ident = "CD8T Naive", min.pct = 0.1, logfc.threshold = 0.0, test.use = "negbinom")
+write.csv(markers5, "CD8TNaive_DE.csv")
+
+markers6 <- FindMarkers(comb, ident.1 = "patient", ident.2 = "healthy", group.by = "subject", subset.ident = "Naive CD4+ T cells", min.pct = 0.1, logfc.threshold = 0.0, test.use = "negbinom")
+write.csv(markers6, "CD4TNaive_DE.csv")
+
+markers7 <- FindMarkers(comb, ident.1 = "patient", ident.2 = "healthy", group.by = "subject", subset.ident = "Mem B cells", min.pct = 0.1, logfc.threshold = 0.0, test.use = "negbinom")
+write.csv(markers7, "MemBcells_DE.csv")
+
+markers8 <- FindMarkers(comb, ident.1 = "patient", ident.2 = "healthy", group.by = "subject", subset.ident = "B Naive cells", min.pct = 0.1, logfc.threshold = 0.0, test.use = "negbinom")
+write.csv(markers8, "NaiveB_DE.csv")
+
+markers9 <- FindMarkers(comb, ident.1 = "patient", ident.2 = "healthy", group.by = "subject", subset.ident = "NK cells", min.pct = 0.1, logfc.threshold = 0.0, test.use = "negbinom")
+write.csv(markers9, "NK_DE.csv")
+
+
+#Violin plot for DCs
+cells <- comb[,comb@active.ident == "CD4+ Mem"]
+vplot <- VlnPlot(cells, features = "CCR4", group.by = "subject", pt.size = 0, cols = c("dark blue", "dark red"))
+vplot + ggplot2::labs(y = "Trancrpit Abundance") + ggtitle("CCR4") + theme(plot.title = element_text(family = "Arial", face = "italic", size = 24), axis.title.y = element_text(family = "Arial", size = 24), panel.border = element_rect(colour = "black", fill=NA, size=1))
+
+
+
+#Feature plot for DCs
+FeaturePlot(comb[, comb@active.ident == "Mem B cells"], features = c("IGHE", "IGHD"), 
+            cols = c("#ECE7F2", "#74A9CF", "#3690C0", "#0570B0", "#034E7B"), 
+            split.by = "subject")
+
+#Volcano plot for DCs
+mDC_DE <- as.data.frame(mDC_DE)
+rownames(mDC_DE) <- mDC_DE[,1]
+mDC_DE <- mDC_DE[,-1]
+keyvals.colour <- ifelse(mDC_DE$p_val > 0.05, 'black',
+    ifelse(mDC_DE$p_val > 1.45e-6 & mDC_DE$avg_log2FC > 0, 'pink',
+           ifelse(mDC_DE$p_val > 1.45e-6 & mDC_DE$avg_log2FC < 0, 'light blue',
+                  ifelse(mDC_DE$p_val < 1.45e-6 & mDC_DE$avg_log2FC > 0, 'red',
+                         ifelse(mDC_DE$p_val < 1.45e-6 & mDC_DE$avg_log2FC < 0, 'blue2',
+                                       'black')))))
+keyvals.colour[is.na(keyvals.colour)] <- 'black'
+names(keyvals.colour)[keyvals.colour == 'light blue'] <- 'down_nonsig'
+names(keyvals.colour)[keyvals.colour == 'pink'] <- 'up_nonsig'
+names(keyvals.colour)[keyvals.colour == 'grey'] <- 'non_sig'
+names(keyvals.colour)[keyvals.colour == 'red'] <- 'up_sig'
+names(keyvals.colour)[keyvals.colour == 'blue2'] <- 'down_sig'
+names(keyvals.colour)[keyvals.colour == 'black'] <- 'not_sig'
+volcano <- EnhancedVolcano(mDC_DE, lab = rownames(mDC_DE), x = 'avg_log2FC', y = 'p_val', title = 'Memory B cells DE',
+    pCutoff = 0.05,
+    hline = 1.45e-6,
+    FCcutoff = 0.25,
+    pointSize = 4.0,
+    selectLab = c('CD1C', 'CD83', 'CLECL1', 'FCN1', 'S100A9', 'S100A4', 'GPR183', 'SLC2A3', 'LYZ', 'ZNF331', 'CD1E', 'CCR7'),
+    labSize = 4.0,
+    labCol = 'black',
+    boxedLabels = TRUE,
+    colCustom = keyvals.colour,
+    colAlpha = 0.6,
+    drawConnectors = TRUE,
+    widthConnectors = 0.9,
+    xlab = bquote(~Log[2]~"Fold Change"),
+    ylab = bquote(~-Log[10]~"P value"))
+volcano +
+  ggplot2::coord_cartesian(xlim=c(-3, 3))
+
+
+
+#Violin plot for Mem B cells
+cells <- comb[,comb@active.ident == "Mem B cells"]
+VlnPlot(cells, features = "IGHG3", group.by = "subject", pt.size = 0, cols = c("#2ca030", "#443ad6"))
+
+#Volcano plot for Mem B cells
+MemBcells_DE <- as.data.frame(MemBcells_DE)
+rownames(MemBcells_DE) <- MemBcells_DE[,1]
+MemBcells_DE <- MemBcells_DE[,-1]
+keyvals.colour <- ifelse(MemBcells_DE$p_val > 0.05, 'black',
+    ifelse(MemBcells_DE$p_val > 1.45e-6 & MemBcells_DE$avg_log2FC > 0, 'pink',
+           ifelse(MemBcells_DE$p_val > 1.45e-6 & MemBcells_DE$avg_log2FC < 0, 'light blue',
+                  ifelse(MemBcells_DE$p_val < 1.45e-6 & MemBcells_DE$avg_log2FC > 0, 'red',
+                         ifelse(MemBcells_DE$p_val < 1.45e-6 & MemBcells_DE$avg_log2FC < 0, 'blue2',
+                                       'black')))))
+keyvals.colour[is.na(keyvals.colour)] <- 'black'
+names(keyvals.colour)[keyvals.colour == 'light blue'] <- 'down_nonsig'
+names(keyvals.colour)[keyvals.colour == 'pink'] <- 'up_nonsig'
+names(keyvals.colour)[keyvals.colour == 'grey'] <- 'non_sig'
+names(keyvals.colour)[keyvals.colour == 'red'] <- 'up_sig'
+names(keyvals.colour)[keyvals.colour == 'blue2'] <- 'down_sig'
+names(keyvals.colour)[keyvals.colour == 'black'] <- 'not_sig'
+volcano <- EnhancedVolcano(MemBcells_DE, lab = rownames(MemBcells_DE), x = 'avg_log2FC', y = 'p_val', title = 'Memory B cells DE',
+    pCutoff = 0.05,
+    hline = 1.45e-6,
+    FCcutoff = 0.25,
+    pointSize = 4.0,
+    selectLab = c('IGHE', 'FOS', 'TXNIP', 'IL4R', 'CCL5', 'IGHM', 'IGHG3', 'IGKV4-1'),
+    labSize = 4.0,
+    labCol = 'black',
+    boxedLabels = TRUE,
+    colCustom = keyvals.colour,
+    colAlpha = 0.6,
+    drawConnectors = TRUE,
+    widthConnectors = 0.9,
+    xlab = bquote(~Log[2]~"Fold Change"),
+    ylab = bquote(~-Log[10]~"P value"))
+volcano +
+  ggplot2::coord_cartesian(xlim=c(-3, 3))
+
+
+#Violin plot for Mem CD4 cells
+cells <- comb[,comb@active.ident == "CD4+ Mem"]
+VlnPlot(cells, features = "GATA3", group.by = "subject", pt.size = 0, cols = c("#2ca030", "#443ad6"))
+
+#Volcano plot for Mem CD4 cells
+MemCD4_DE <- as.data.frame(MemCD4_DE)
+rownames(MemCD4_DE) <- MemCD4_DE[,1]
+MemCD4_DE <- MemCD4_DE[,-1]
+keyvals.colour <- ifelse(MemCD4_DE$p_val > 0.05, 'black',
+    ifelse(MemCD4_DE$p_val > 1.45e-6 & MemCD4_DE$avg_log2FC > 0, 'pink',
+           ifelse(MemCD4_DE$p_val > 1.45e-6 & MemCD4_DE$avg_log2FC < 0, 'light blue',
+                  ifelse(MemCD4_DE$p_val < 1.45e-6 & MemCD4_DE$avg_log2FC > 0, 'red',
+                         ifelse(MemCD4_DE$p_val < 1.45e-6 & MemCD4_DE$avg_log2FC < 0, 'blue2',
+                                       'black')))))
+keyvals.colour[is.na(keyvals.colour)] <- 'black'
+names(keyvals.colour)[keyvals.colour == 'light blue'] <- 'down_nonsig'
+names(keyvals.colour)[keyvals.colour == 'pink'] <- 'up_nonsig'
+names(keyvals.colour)[keyvals.colour == 'grey'] <- 'non_sig'
+names(keyvals.colour)[keyvals.colour == 'red'] <- 'up_sig'
+names(keyvals.colour)[keyvals.colour == 'blue2'] <- 'down_sig'
+names(keyvals.colour)[keyvals.colour == 'black'] <- 'not_sig'
+volcano <- EnhancedVolcano(MemCD4_DE, lab = rownames(MemCD4_DE), x = 'avg_log2FC', y = 'p_val', title = 'Memory B cells DE',
+    pCutoff = 0.05,
+    hline = 1.45e-6,
+    FCcutoff = 0.25,
+    pointSize = 4.0,
+    selectLab = c('FOS', 'JUNB', 'TXNIP', 'IL4R', 'GATA3', 'CXCR4', 'SOCS3', 'STAT6', 'MAL', 'ID2', 'CXCR3'),
+    labSize = 4.0,
+    labCol = 'black',
+    boxedLabels = TRUE,
+    colCustom = keyvals.colour,
+    colAlpha = 0.6,
+    drawConnectors = TRUE,
+    widthConnectors = 0.9,
+    xlab = bquote(~Log[2]~"Fold Change"),
+    ylab = bquote(~-Log[10]~"P value"))
+volcano +
+  ggplot2::coord_cartesian(xlim=c(-2, 2))
+
+
+
+
+
+#Add post dupilumab patient sample
+s6p_post <- Read10X(data.dir = "C:/AMA/STAT6/RNAseq/HKseq/scRNAseq/post_dup_patient_PBMCs/filtered_feature_bc_matrix")
+s6p_post_pbmc <- CreateSeuratObject(counts = s6p_post, project = "S6P_HK", min.features = 200)
+s6p_post_pbmc[["percent.mt"]] <- PercentageFeatureSet(s6p_post_pbmc, pattern = "^MT-")
+s6p_post_pbmc[["percent.HBB"]] <- PercentageFeatureSet(s6p_post_pbmc, pattern = "^HBB")
+#plot1 <- FeatureScatter(s6p_post_pbmc, feature1 = "nFeature_RNA", feature2 = "percent.mt")
+#plot1 <- FeatureScatter(s6p_post_pbmc, feature1 = "nFeature_RNA", feature2 = "percent.HBB")
+#plot1 <- FeatureScatter(s6p_post_pbmc, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+#plot1
+s6p_post_pbmc <- subset(s6p_post_pbmc, subset = nFeature_RNA > 500 & nFeature_RNA < 5000 & percent.mt < 10 & percent.HBB < 0.5)
+counts <- GetAssayData(s6p_post_pbmc, assay = "RNA")
+counts <- counts[-(which(rownames(counts) %in% c('HBB','HBA1','HBA2','HBG2','HBG1','HBD'))),]
+counts <- counts[-grep("RPS",rownames(counts)),]
+counts <- counts[-grep("RPL",rownames(counts)),]
+counts <- counts[-grep("MT-",rownames(counts)),]
+counts <- counts[-grep("LINC",rownames(counts)),]
+s6p_post_pbmc <- subset(s6p_post_pbmc, features = rownames(counts))
+s6p_post_pbmc$subject <- "patient_postdup"
+
+#plot1 <- FeatureScatter(s6p_post_pbmc, feature1 = "nFeature_RNA", feature2 = "percent.mt")
+#plot1 <- FeatureScatter(s6p_post_pbmc, feature1 = "nFeature_RNA", feature2 = "percent.HBB")
+#plot1 <- FeatureScatter(s6p_post_pbmc, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+
+#comb1 <- merge(hcp_pbmc, y = c(s6p_pbmc, s6p_post_pbmc), add.cell.ids = c("HC", "S6P", "S6P_post"))
+#comb1 <- FindVariableFeatures(comb1)
+#comb1 <- ScaleData(comb1)
+#comb1 <- RunPCA(comb1)
+#comb1 <- RunUMAP(comb1, dims = 1:20)
+#comb1 <- RunTSNE(comb1)
+#comb1 <- FindNeighbors(comb1)
+#comb1 <- FindClusters(comb1)
+
+#DimPlot(comb1, label = T, repel = F, label.size = 4, split.by = "subject")
+
+#does not cluster with the first two samples.
+
+#try solo clustering
+s6p_post_pbmc <- ScaleData(s6p_post_pbmc) %>% 
+  FindVariableFeatures(.) %>% 
+  RunPCA(.) %>% 
+  RunUMAP(., dims = 1:20) %>% 
+  FindNeighbors(., dims = 1:30) %>% 
+  FindClusters(.)
+
+DimPlot(s6p_post_pbmc, label = T, repel = F, label.size = 4)
+
+s6p_post_pbmc.sc <- as.SingleCellExperiment(s6p_post_pbmc, assay = "RNA")
+nh.ref <- celldex::NovershternHematopoieticData()
+
+pred.nh <- SingleR(test = s6p_post_pbmc.sc, ref = nh.ref, labels = nh.ref$label.main)
+pred.nh.f <- SingleR(test = s6p_post_pbmc.sc, ref = nh.ref, labels = nh.ref$label.fine)
+if (identical(rownames(pred.nh), colnames(s6p_post_pbmc.sc))) {
+  s6p_post_pbmc.sc$NH <- pred.nh$labels
+  s6p_post_pbmc.sc$NH.fine <- pred.nh.f$labels
+}
+ct <- data.frame(cbind(NH = s6p_post_pbmc.sc$NH,
+                       NH.fine = s6p_post_pbmc.sc$NH.fine)) 
+rownames(ct) <- colnames(s6p_post_pbmc)
+s6p_post_pbmc <- AddMetaData(s6p_post_pbmc, ct)
+
+s6p_post_pbmc$NH.fine[s6p_post_pbmc$NH.fine %in% c("Mature B cells class switched", "Mature B cells class able to switch")] <- "Mature B cells"
+s6p_post_pbmc$NH.fine[s6p_post_pbmc$NH.fine %in% c("CD4+ Central Memory", "CD4+ Effector Memory")] <- "CD4+ Memory"
+s6p_post_pbmc$NH.fine[s6p_post_pbmc$NH.fine %in% c("CD8+ Central Memory", "CD8+ Effector Memory", "CD8+ Effector Memory RA")] <- "CD8+ Memory"
+s6p_post_pbmc$NH.fine[s6p_post_pbmc$NH.fine %in% c("Erythroid_CD34- CD71+ GlyA-", "Erythroid_CD34- CD71+ GlyA+", "Erythroid_CD34- CD71- GlyA+", "Erythroid_CD34- CD71lo GlyA+", "Erythroid_CD34+ CD71+ GlyA-")] <- "Erythroid cells"
+#s6p_post_pbmc$NH.fine[s6p_post_pbmc$NH.fine %in% c("Mature NK cells_CD56- CD16+ CD3-", "Mature NK cells_CD56- CD16- CD3-", "Mature NK cells_CD56+ CD16+ CD3-")] <- "NK cells"
+s6p_post_pbmc$NH.fine[s6p_post_pbmc$NH.fine %in% c("Granulocytes (Neutrophilic Metamyelocytes)", "Granulocytes (Neutrophils)", "Basophils")] <- "Other Granulocytes"
+s6p_post_pbmc$NH.fine[s6p_post_pbmc$NH.fine %in% c("Colony Forming Unit-Granulocytes", "Colony Forming Unit-Megakaryocytic", "Colony Forming Unit-Monocytes", "Common myeloid progenitors", "Hematopoietic stem cells_CD133+ CD34dim", "Early B cells", "NK T cells", "Pro B cells", "Megakaryocytes")] <- "Progenitors"
+s6p_post_pbmc$NH.fine[s6p_post_pbmc$NH.fine %in% c("Naive CD8+ T cells")] <- "CD8T Naive"
+s6p_post_pbmc$NH.fine[s6p_post_pbmc$NH.fine %in% c("CD8+ Memory")] <- "Mem CD8T"
+
+s6p_post_pbmc$label <- s6p_post_pbmc$NH
+s6p_post_pbmc$label.fine <- s6p_post_pbmc$NH.fine
+
+DimPlot(s6p_post_pbmc, group.by = "label.fine", label = T, repel = F, label.size = 4)
+
+s6p_post_pbmc <- RenameIdents(s6p_post_pbmc, `6` = "CD14 Mono", `8` = "CD14 Mono") %>%
+  RenameIdents(., `0` = "CD4+ Mem", `11` = "CD4+ Mem", `14` = "CD4+ Mem", `21` = "CD4+ Mem") %>%
+  RenameIdents(., `16` = "CD8+ Mem", `13` = "CD8+ Mem", `3` = "CD8+ Mem", `7` = "CD8+ Mem", `17` = "CD8+ Mem", `9` = "CD8+ Mem") %>%
+  RenameIdents(., `1` = "Naive CD4+ T cells", `2` = "Naive CD4+ T cells") %>%
+  RenameIdents(., `5` = "NK cells") %>%
+  RenameIdents(., `4` = "Naive B", `12` = "Naive B", `10` = "Naive B") %>%
+  RenameIdents(., `15` = "Erythroid cells") %>%
+  RenameIdents(., `20` = "DC1") %>%
+  RenameIdents(., `19` = "DC2") %>%
+  RenameIdents(., `18` = "pDC") %>%
+  RenameIdents(., `22` = "other")
+
+
+s6p_post_pbmc$final.ident <- as.character(s6p_post_pbmc@active.ident)
+s6p_post_pbmc$final.ident[s6p_post_pbmc$label.fine == "NK cells"] <- "NK cells"
+s6p_post_pbmc@active.ident <- as.factor(s6p_post_pbmc$final.ident)
+
+s6p_post_pbmc$final.ident1 <- as.character(s6p_post_pbmc@active.ident)
+s6p_post_pbmc$final.ident1[s6p_post_pbmc$label.fine == "CD8T Naive"] <- "CD8T Naive"
+s6p_post_pbmc@active.ident <- as.factor(s6p_post_pbmc$final.ident1)
+
+s6p_post_pbmc$final.ident2 <- as.character(s6p_post_pbmc@active.ident)
+s6p_post_pbmc$final.ident2[s6p_post_pbmc$label.fine == "Mature B cells"] <- "Mem B cells"
+s6p_post_pbmc@active.ident <- as.factor(s6p_post_pbmc$final.ident2)
+
+s6p_post_pbmc$final.ident3 <- as.character(s6p_post_pbmc@active.ident)
+s6p_post_pbmc$final.ident3[s6p_post_pbmc$label.fine == "Naive B cells"] <- "Naive B"
+s6p_post_pbmc@active.ident <- as.factor(s6p_post_pbmc$final.ident3)
+
+s6p_post_pbmc$final.ident4 <- as.character(s6p_post_pbmc@active.ident)
+s6p_post_pbmc$final.ident4[s6p_post_pbmc$label.fine == "DC1"] <- "DC1"
+s6p_post_pbmc@active.ident <- as.factor(s6p_post_pbmc$final.ident4)
+
+s6p_post_pbmc$final.ident5 <- as.character(s6p_post_pbmc@active.ident)
+s6p_post_pbmc$final.ident5[s6p_post_pbmc$label.fine == "DC2"] <- "DC2"
+s6p_post_pbmc@active.ident <- as.factor(s6p_post_pbmc$final.ident5)
+
+memBmarkers <- subset(x = s6p_post_pbmc, subset = IGHE > 0 | IGHG1 > 0 | IGHG2 > 0 | IGHG3 > 0 | IGHG4 > 0, idents = "Naive B")
+s6p_post_pbmc$final.ident2[colnames(s6p_post_pbmc) %in% colnames(memBmarkers)] <- "Mem B cells"
+s6p_post_pbmc@active.ident <- as.factor(s6p_post_pbmc$final.ident2)
+
+
+s6p_post_pbmc <- RenameIdents(s6p_post_pbmc, `Naive B` = "B Naive cells")
+
+plot1 <- DimPlot(s6p_post_pbmc, split.by = "subject", label.size = 4)
+plot1[[1]]$layers[[1]]$aes_params$alpha <- 0.5
+plot1
+
+#combine memory B cells
+s6.list <- SplitObject(comb, split.by = "subject")
+healthy_pbmcs <- s6.list$healthy
+patient_pbmcs <- s6.list$patient
+
+memB_HC <- subset(healthy_pbmcs, idents = c("Mem B cells"))
+memB_HC <- FindVariableFeatures(memB_HC, selection.method = "vst", nfeatures = 2000)
+
+MemB_S6P_pre <- subset(patient_pbmcs, idents = c("Mem B cells"))
+MemB_S6P_pre <- FindVariableFeatures(MemB_S6P_pre, selection.method = "vst", nfeatures = 2000)
+
+MemB_post <- subset(s6p_post_pbmc, idents = c("Mem B cells"))
+MemB_post <- FindVariableFeatures(MemB_post, selection.method = "vst", nfeatures = 2000)
+
+memB_comb <- merge(memB_HC, y=c(MemB_S6P_pre, MemB_post))
+
+
+s6_memB.list <- SplitObject(memB_comb, split.by = "subject")
+
+features <- SelectIntegrationFeatures(object.list = s6_memB.list)
+anchors <- FindIntegrationAnchors(object.list = s6_memB.list, anchor.features = c(features))
+integrated_data <- IntegrateData(anchorset = anchors)
+
+DefaultAssay(integrated_data) <- "integrated"
+integrated_data <- ScaleData(integrated_data) %>% 
+  #FindVariableFeatures(.) %>% 
+  RunPCA(., npcs = 30) %>% 
+  RunUMAP(., reduction = "pca", dims = 1:30) %>% 
+  FindNeighbors(., reduction = "pca", dims = 1:30) %>% 
+  FindClusters(., resolution = 0.5)
+
+DimPlot(integrated_data, label = T, repel = F, label.size = 4, split.by = "subject")
+
+#for vlnplots
+DefaultAssay(integrated_data) <- "integrated"
+vplot <- VlnPlot(integrated_data, features = "IGHE", group.by = "subject", pt.size = 1, cols = c("dark blue", "dark red", "dark green"), log = TRUE)
+vplot + ggplot2::labs(y = "Trancrpit Abundance") + ggtitle("IL4R") + theme(plot.title = element_text(family = "Arial", face = "italic", size = 24), axis.title.y = element_text(family = "Arial", size = 24), panel.border = element_rect(colour = "black", fill=NA, size=1))
+
+
+
+```
+
+
+## Cell Cluster Annotation
+
+### Reference-based annotation with SingleR
+
+```{r}
+#T cell enriched single cell analysis
+
+hct <- Read10X(data.dir = "C:/AMA/STAT6/RNAseq/HKseq/scRNAseq/daniel_4_samples_possible_hct_gex-20220727T024353Z-001/daniel_4_samples_possible_hct_gex/outs/filtered_feature_bc_matrix")
+hct_pbmc <- CreateSeuratObject(counts = hct, project = "S6P_HK")
+hct_pbmc$subject <- "healthy"
+
+s6t <- Read10X(data.dir = "C:/AMA/STAT6/RNAseq/HKseq/scRNAseq/s6t_only/filtered_feature_bc_matrix")
+s6t_pbmc <- CreateSeuratObject(counts = s6t, project = "S6P_HK")
+s6t_pbmc$subject <- "patient"
+
+s6t_post <- Read10X(data.dir = "C:/AMA/STAT6/RNAseq/HKseq/scRNAseq/post_dup_patient_Tenrich/filtered_feature_bc_matrix/")
+s6t_post_pbmc <- CreateSeuratObject(counts = s6t_post, project = "S6P_HK")
+s6t_post_pbmc$subject <- "patient_postdup"
+
+comb <- merge(hct_pbmc, y=c(s6t_pbmc, s6t_post_pbmc), add.cell.ids = c("HC", "S6T", "S6T_post"))
+
+s6.list <- SplitObject(comb, split.by = "subject")
+
+for (i in 1:length(s6.list)) {
+  counts <- GetAssayData(s6.list[[i]], assay = "RNA")
+  counts <- counts[-(which(rownames(counts) %in% c('HBB','HBA1','HBA2','HBG2','HBG1','HBD'))),]
+  counts <- counts[-grep("RPS",rownames(counts)),]
+  counts <- counts[-grep("RPL",rownames(counts)),]
+  counts <- counts[-grep("MT-",rownames(counts)),]
+  counts <- counts[-grep("LINC",rownames(counts)),]
+  s6.list[[i]] <- subset(s6.list[[i]], features = rownames(counts))
+  s6.list[[i]] <- NormalizeData(s6.list[[i]])
+  s6.list[[i]] <- FindVariableFeatures(
+    s6.list[[i]], selection.method = "vst",
+    nfeatures = 2000
+  )
+}
+
+
+features <- SelectIntegrationFeatures(object.list = s6.list)
+anchors <- FindIntegrationAnchors(object.list = s6.list, anchor.features = c(features, "IL4R"))
+integrated_data <- IntegrateData(anchorset = anchors)
+
+DefaultAssay(integrated_data) <- "integrated"
+integrated_data <- ScaleData(integrated_data) %>% 
+  #FindVariableFeatures(.) %>% 
+  RunPCA(., npcs = 30) %>% 
+  RunUMAP(., reduction = "pca", dims = 1:30) %>% 
+  FindNeighbors(., reduction = "pca", dims = 1:30) %>% 
+  FindClusters(., resolution = 0.5)
+
+DimPlot(integrated_data, label = T, repel = F, label.size = 4, split.by = "subject")
+
+
+integrated_data.sc <- as.SingleCellExperiment(integrated_data, assay = "RNA")
+#nh.ref <- celldex::NovershternHematopoieticData()
+#im.ref <- celldex::DatabaseImmuneCellExpressionData()
+mn.ref <- celldex::MonacoImmuneData()
+
+#pred.nh <- SingleR(test = integrated_data.sc, ref = nh.ref, labels = nh.ref$label.main)
+#pred.nh.f <- SingleR(test = integrated_data.sc, ref = nh.ref, labels = nh.ref$label.fine)
+#if (identical(rownames(pred.nh), colnames(integrated_data.sc))) {
+#  integrated_data.sc$NH <- pred.nh$labels
+#  integrated_data.sc$NH.fine <- pred.nh.f$labels
+#}
+#ct <- data.frame(cbind(NH = integrated_data.sc$NH,
+#                       NH.fine = integrated_data.sc$NH.fine)) 
+#rownames(ct) <- colnames(integrated_data)
+#integrated_data <- AddMetaData(integrated_data, ct)
+
+#pred.im <- SingleR(test = integrated_data.sc, ref = im.ref, labels = im.ref$label.main)
+#pred.im.f <- SingleR(test = integrated_data.sc, ref = im.ref, labels = im.ref$label.fine)
+#if (identical(rownames(pred.im), colnames(integrated_data.sc))) {
+#  integrated_data.sc$IM <- pred.im$labels
+#  integrated_data.sc$IM.fine <- pred.im.f$labels
+#}
+#ct2 <- data.frame(cbind(IM = integrated_data.sc$IM,
+#                       IM.fine = integrated_data.sc$IM.fine)) 
+#rownames(ct2) <- colnames(integrated_data)
+#integrated_data <- AddMetaData(integrated_data, ct2)
+
+pred.mn <- SingleR(test = integrated_data.sc, ref = mn.ref, labels = mn.ref$label.main)
+pred.mn.f <- SingleR(test = integrated_data.sc, ref = mn.ref, labels = mn.ref$label.fine)
+if (identical(rownames(pred.mn), colnames(integrated_data.sc))) {
+  integrated_data.sc$MN <- pred.mn$labels
+  integrated_data.sc$MN.fine <- pred.mn.f$labels
+}
+ct3 <- data.frame(cbind(MN = integrated_data.sc$MN,
+                       MN.fine = integrated_data.sc$MN.fine)) 
+rownames(ct3) <- colnames(integrated_data)
+integrated_data <- AddMetaData(integrated_data, ct3)
+
+integrated_data$MN.fine[integrated_data$MN.fine %in% c("Classical monocytes", "Exhausted B cells", "Intermediate monocytes", "Low-density basophils", "MAIT cells", "Myeloid dendritic cells", "Naive B cells", "Non-switched memory B cells", "Non classical monocytes", "Plasmablasts", "Plasmacytoid dendritic cells", "Progenitor cells", "Switched memory B cells")] <- "Non-T cells"
+
+integrated_data$MN.fine[integrated_data$MN.fine %in% c("Vd2 gd T cells", "Non-Vd2 gd T cells")] <- "GD-T cells"
+
+integrated_data$MN.fine[integrated_data$MN.fine %in% c("Central memory CD8 T cells", "Effector memory CD8 T cells", "Terminal effector CD8 T cells", "Terminal effector CD4 T cells")] <- "Memory CD8 T cells"
+
+integrated_data$MN.fine[integrated_data$MN.fine %in% c("Naive CD8 T cells")] <- "CD8 T Naive"
+
+#integrated_data$label <- integrated_data$NH
+#integrated_data$label.fine <- integrated_data$NH.fine
+
+#integrated_data$label2 <- integrated_data$IM
+#integrated_data$label2.fine <- integrated_data$IM.fine
+
+integrated_data$label3 <- integrated_data$MN
+integrated_data$label3.fine <- integrated_data$MN.fine
+
+DimPlot(integrated_data, group.by = "label3.fine", label = F, repel = F, label.size = 4, split.by = "subject")
+
+
+#x <- table(data$healthy$IM.fine)
+#x <- as.data.frame(x)
+
+#y <- table(data$patient$IM.fine)
+#y <- as.data.frame(y)
+
+
+#(z1, "healthy_monaco_tenrich.csv")
+#write.csv(z, "patient_monaco_tenrich.csv")
+
+#Define clusters as cell types
+integrated_data$final.ident <- as.character(integrated_data@active.ident)
+integrated_data$final.ident[integrated_data$label3.fine == "Naive CD4 T cells"] <- "Naive_CD4T"
+integrated_data@active.ident <- as.factor(integrated_data$final.ident)
+
+integrated_data$final1.ident <- as.character(integrated_data@active.ident)
+integrated_data$final1.ident[integrated_data$label3.fine == "CD8 T Naive"] <- "CD8T_Naive"
+integrated_data@active.ident <- as.factor(integrated_data$final1.ident)
+
+integrated_data$final2.ident <- as.character(integrated_data@active.ident)
+integrated_data$final2.ident[integrated_data$label3.fine == "Follicular helper T cells"] <- "Follicular helper T cells"
+integrated_data@active.ident <- as.factor(integrated_data$final2.ident)
+
+integrated_data$final3.ident <- as.character(integrated_data@active.ident)
+integrated_data$final3.ident[integrated_data$label3.fine == "GD-T cells"] <- "GD-T cells"
+integrated_data@active.ident <- as.factor(integrated_data$final3.ident)
+
+integrated_data$final4.ident <- as.character(integrated_data@active.ident)
+integrated_data$final4.ident[integrated_data$label3.fine == "Natural killer cells"] <- "Natural killer cells"
+integrated_data@active.ident <- as.factor(integrated_data$final4.ident)
+
+integrated_data$final5.ident <- as.character(integrated_data@active.ident)
+integrated_data$final5.ident[integrated_data$label3.fine == "Non-T cells"] <- "Non-T cells"
+integrated_data@active.ident <- as.factor(integrated_data$final5.ident)
+
+integrated_data$final6.ident <- as.character(integrated_data@active.ident)
+integrated_data$final6.ident[integrated_data$label3.fine == "T regulatory cells"] <- "T regulatory cells"
+integrated_data@active.ident <- as.factor(integrated_data$final6.ident)
+
+integrated_data$final7.ident <- as.character(integrated_data@active.ident)
+integrated_data$final7.ident[integrated_data$label3.fine == "Th1 cells"] <- "Th1 cells"
+integrated_data@active.ident <- as.factor(integrated_data$final7.ident)
+
+integrated_data$final8.ident <- as.character(integrated_data@active.ident)
+integrated_data$final8.ident[integrated_data$label3.fine == "Th1/Th17 cells"] <- "Th1/Th17 cells"
+integrated_data@active.ident <- as.factor(integrated_data$final8.ident)
+
+integrated_data$final9.ident <- as.character(integrated_data@active.ident)
+integrated_data$final9.ident[integrated_data$label3.fine == "Th17 cells"] <- "Th17 cells"
+integrated_data@active.ident <- as.factor(integrated_data$final9.ident)
+
+integrated_data$final10.ident <- as.character(integrated_data@active.ident)
+integrated_data$final10.ident[integrated_data$label3.fine == "Th2 cells"] <- "Th2_cells"
+integrated_data@active.ident <- as.factor(integrated_data$final10.ident)
+
+integrated_data$final11.ident <- as.character(integrated_data@active.ident)
+integrated_data$final11.ident[integrated_data$label3.fine == "Memory CD8 T cells"] <- "Memory_CD8T_cells"
+integrated_data@active.ident <- as.factor(integrated_data$final11.ident)
+
+Th2markers <- subset(x = integrated_data, subset = GATA3 > 0, idents = "T regulatory cells")
+integrated_data$final.ident12 <- as.character(integrated_data@active.ident)
+integrated_data$final.ident12[colnames(integrated_data) %in% colnames(Th2markers)] <- "Th2_cells"
+integrated_data@active.ident <- as.factor(integrated_data$final.ident12)
+
+memCD8markers <- subset(x = integrated_data, subset = GZMK > 0, idents = "GD-T cells")
+integrated_data$final.ident13 <- as.character(integrated_data@active.ident)
+integrated_data$final.ident13[colnames(integrated_data) %in% colnames(memCD8markers)] <- "Memory_CD8T_cells"
+integrated_data@active.ident <- as.factor(integrated_data$final.ident13)
+
+plot1 <- DimPlot(integrated_data, split.by = "subject", label.size = 4)
+plot1[[1]]$layers[[1]]$aes_params$alpha <- 0.5
+plot1
+
+save(integrated_data, file="Tcell_integrated_scRNAseq_seurat.RData")
+
+data <- SplitObject(integrated_data, split.by = "subject")
+
+z <- table(data$patient@active.ident)
+z <- as.data.frame(z)
+write.csv(z, "patient_tenrich_prop.csv")
+
+z1 <- table(data$healthy@active.ident)
+z1 <- as.data.frame(z1)
+write.csv(z1, "healthy_tenrich_prop.csv")
+
+z2 <- table(data$patient_postdup@active.ident)
+z2 <- as.data.frame(z2)
+write.csv(z2, "patient_postdup_tenrich_prop.csv")
+
+# DE Naive CD4T cells
+markers6 <- FindMarkers(comb, ident.1 = "patient", ident.2 = "healthy", group.by = "subject", subset.ident = "Naive_CD4T", min.pct = 0.1, logfc.threshold = 0.0, test.use = "negbinom")
+write.csv(markers6, "CD4TNaive_DE.csv")
+
+# DE Naive CD8T cells
+markers7 <- FindMarkers(comb, ident.1 = "patient", ident.2 = "healthy", group.by = "subject", subset.ident = "CD8T_Naive", min.pct = 0.1, logfc.threshold = 0.0, test.use = "negbinom")
+write.csv(markers7, "CD8TNaive_DE.csv")
+
+# DE TH2 cells
+markers7 <- FindMarkers(comb, ident.1 = "patient", ident.2 = "healthy", group.by = "subject", subset.ident = "Th2_cells", min.pct = 0.1, logfc.threshold = 0.0, test.use = "negbinom")
+write.csv(markers7, "Th2_cells_DE.csv")
+
+# DE Mem CD8 cells
+markers8 <- FindMarkers(comb, ident.1 = "patient", ident.2 = "healthy", group.by = "subject", subset.ident = "Memory_CD8T_cells", min.pct = 0.1, logfc.threshold = 0.0, test.use = "negbinom")
+write.csv(markers8, "Memory_CD8T_cells_DE.csv")
+
+
+#for vlnplots
+DefaultAssay(integrated_data) <- "RNA"
+cells <- integrated_data[,integrated_data@active.ident == "CD8T_Naive"]
+vplot <- VlnPlot(cells, features = "IL4R", group.by = "subject", pt.size = 0, cols = c("dark blue", "dark red", "dark green"))
+vplot + ggplot2::labs(y = "Trancrpit Abundance") + ggtitle("IL4R") + theme(plot.title = element_text(family = "Arial", face = "italic", size = 24), axis.title.y = element_text(family = "Arial", size = 24), panel.border = element_rect(colour = "black", fill=NA, size=1))
+
+
+comb.markers <- FindAllMarkers(comb, only.pos = TRUE, min.pct = 0.10, logfc.threshold = 0.25)
+
+comb.markers %>%
+    group_by(cluster) %>%
+    top_n(n = 100, wt = avg_log2FC) -> top10
+DoHeatmap(comb, features = top10$gene) + NoLegend()
+
+
+#Violin plot for Naive CD4 cells
+cells <- integrated_data[,integrated_data@active.ident == "Naive_CD4T"]
+VlnPlot(cells, features = "IL4R", group.by = "subject", pt.size = 0, cols = c("blue", "dark red", "dark green"))
+
+#Volcano plot for Naive CD4T cells
+Naive_CD4T <- as.data.frame(Naive_CD4T)
+rownames(Naive_CD4T) <- Naive_CD4T[,1]
+Naive_CD4T <- Naive_CD4T[,-1]
+keyvals.colour <- ifelse(Naive_CD4T$p_val > 0.05, 'black',
+    ifelse(Naive_CD4T$p_val > 1.45e-6 & Naive_CD4T$avg_log2FC > 0, 'pink',
+           ifelse(Naive_CD4T$p_val > 1.45e-6 & Naive_CD4T$avg_log2FC < 0, 'light blue',
+                  ifelse(Naive_CD4T$p_val < 1.45e-6 & Naive_CD4T$avg_log2FC > 0, 'red',
+                         ifelse(Naive_CD4T$p_val < 1.45e-6 & Naive_CD4T$avg_log2FC < 0, 'blue2',
+                                       'black')))))
+keyvals.colour[is.na(keyvals.colour)] <- 'black'
+names(keyvals.colour)[keyvals.colour == 'light blue'] <- 'down_nonsig'
+names(keyvals.colour)[keyvals.colour == 'pink'] <- 'up_nonsig'
+names(keyvals.colour)[keyvals.colour == 'grey'] <- 'non_sig'
+names(keyvals.colour)[keyvals.colour == 'red'] <- 'up_sig'
+names(keyvals.colour)[keyvals.colour == 'blue2'] <- 'down_sig'
+names(keyvals.colour)[keyvals.colour == 'black'] <- 'not_sig'
+volcano <- EnhancedVolcano(Naive_CD4T, lab = rownames(Naive_CD4T), x = 'avg_log2FC', y = 'p_val', title = 'Naive CD4T DE',
+    pCutoff = 0.05,
+    hline = 1.45e-6,
+    FCcutoff = 0.25,
+    pointSize = 4.0,
+    selectLab = c('FOS', 'JUNB', 'TXNIP', 'IL4R', 'GATA3', 'SOCS3', 'STAT6', 'NFKBIA', 'FOSB', 'JUNB'),
+    labSize = 4.0,
+    labCol = 'black',
+    boxedLabels = TRUE,
+    colCustom = keyvals.colour,
+    colAlpha = 0.6,
+    drawConnectors = TRUE,
+    widthConnectors = 0.9,
+    xlab = bquote(~Log[2]~"Fold Change"),
+    ylab = bquote(~-Log[10]~"P value"))
+volcano +
+  ggplot2::coord_cartesian(xlim=c(-3, 3))
+
+
+#Volcano plot for Naive CD8T cells
+CD8TNaive <- as.data.frame(CD8TNaive)
+rownames(CD8TNaive) <- CD8TNaive[,1]
+CD8TNaive <- CD8TNaive[,-1]
+keyvals.colour <- ifelse(CD8TNaive$p_val > 0.05, 'black',
+    ifelse(CD8TNaive$p_val > 1.45e-6 & CD8TNaive$avg_log2FC > 0, 'pink',
+           ifelse(CD8TNaive$p_val > 1.45e-6 & CD8TNaive$avg_log2FC < 0, 'light blue',
+                  ifelse(CD8TNaive$p_val < 1.45e-6 & CD8TNaive$avg_log2FC > 0, 'red',
+                         ifelse(CD8TNaive$p_val < 1.45e-6 & CD8TNaive$avg_log2FC < 0, 'blue2',
+                                       'black')))))
+keyvals.colour[is.na(keyvals.colour)] <- 'black'
+names(keyvals.colour)[keyvals.colour == 'light blue'] <- 'down_nonsig'
+names(keyvals.colour)[keyvals.colour == 'pink'] <- 'up_nonsig'
+names(keyvals.colour)[keyvals.colour == 'grey'] <- 'non_sig'
+names(keyvals.colour)[keyvals.colour == 'red'] <- 'up_sig'
+names(keyvals.colour)[keyvals.colour == 'blue2'] <- 'down_sig'
+names(keyvals.colour)[keyvals.colour == 'black'] <- 'not_sig'
+volcano <- EnhancedVolcano(CD8TNaive, lab = rownames(CD8TNaive), x = 'avg_log2FC', y = 'p_val', title = 'Naive CD4T DE',
+    pCutoff = 0.05,
+    hline = 1.45e-6,
+    FCcutoff = 0.25,
+    pointSize = 4.0,
+    selectLab = c('FOS', 'JUNB', 'TXNIP', 'IL4R', 'SOCS3', 'STAT6', 'NFKBIA', 'FOSB', 'JUNB', 'GZMA', 'GZMK'),
+    labSize = 4.0,
+    labCol = 'black',
+    boxedLabels = TRUE,
+    colCustom = keyvals.colour,
+    colAlpha = 0.6,
+    drawConnectors = TRUE,
+    widthConnectors = 0.9,
+    xlab = bquote(~Log[2]~"Fold Change"),
+    ylab = bquote(~-Log[10]~"P value"))
+volcano +
+  ggplot2::coord_cartesian(xlim=c(-3, 3))
+
+
+#Volcano plot for TH2 cells
+Th2_cells <- as.data.frame(Th2_cells)
+rownames(Th2_cells) <- Th2_cells[,1]
+Th2_cells <- Th2_cells[,-1]
+keyvals.colour <- ifelse(Th2_cells$p_val > 0.05, 'black',
+    ifelse(Th2_cells$p_val > 1.45e-6 & Th2_cells$avg_log2FC > 0, 'pink',
+           ifelse(Th2_cells$p_val > 1.45e-6 & Th2_cells$avg_log2FC < 0, 'light blue',
+                  ifelse(Th2_cells$p_val < 1.45e-6 & Th2_cells$avg_log2FC > 0, 'red',
+                         ifelse(Th2_cells$p_val < 1.45e-6 & Th2_cells$avg_log2FC < 0, 'blue2',
+                                       'black')))))
+keyvals.colour[is.na(keyvals.colour)] <- 'black'
+names(keyvals.colour)[keyvals.colour == 'light blue'] <- 'down_nonsig'
+names(keyvals.colour)[keyvals.colour == 'pink'] <- 'up_nonsig'
+names(keyvals.colour)[keyvals.colour == 'grey'] <- 'non_sig'
+names(keyvals.colour)[keyvals.colour == 'red'] <- 'up_sig'
+names(keyvals.colour)[keyvals.colour == 'blue2'] <- 'down_sig'
+names(keyvals.colour)[keyvals.colour == 'black'] <- 'not_sig'
+volcano <- EnhancedVolcano(Th2_cells, lab = rownames(Th2_cells), x = 'avg_log2FC', y = 'p_val', title = 'Naive CD4T DE',
+    pCutoff = 0.05,
+    hline = 1.45e-6,
+    FCcutoff = 0.25,
+    pointSize = 4.0,
+    selectLab = c('FOS', 'JUNB', 'TXNIP', 'IL4R', 'SOCS3', 'STAT6', 'NFKBIA', 'FOSB', 'JUNB', 'GATA3', 'ID2', 'IL32'),
+    labSize = 4.0,
+    labCol = 'black',
+    boxedLabels = TRUE,
+    colCustom = keyvals.colour,
+    colAlpha = 0.6,
+    drawConnectors = TRUE,
+    widthConnectors = 0.9,
+    xlab = bquote(~Log[2]~"Fold Change"),
+    ylab = bquote(~-Log[10]~"P value"))
+volcano +
+  ggplot2::coord_cartesian(xlim=c(-3, 3))
+
+
+
+#Volcano plot for Mem CD8 T cells
+Memory_CD8T_cells <- as.data.frame(Memory_CD8T_cells)
+rownames(Memory_CD8T_cells) <- Memory_CD8T_cells[,1]
+Memory_CD8T_cells <- Memory_CD8T_cells[,-1]
+keyvals.colour <- ifelse(Memory_CD8T_cells$p_val > 0.05, 'black',
+    ifelse(Memory_CD8T_cells$p_val > 1.45e-6 & Memory_CD8T_cells$avg_log2FC > 0, 'pink',
+           ifelse(Memory_CD8T_cells$p_val > 1.45e-6 & Memory_CD8T_cells$avg_log2FC < 0, 'light blue',
+                  ifelse(Memory_CD8T_cells$p_val < 1.45e-6 & Memory_CD8T_cells$avg_log2FC > 0, 'red',
+                         ifelse(Memory_CD8T_cells$p_val < 1.45e-6 & Memory_CD8T_cells$avg_log2FC < 0, 'blue2',
+                                       'black')))))
+keyvals.colour[is.na(keyvals.colour)] <- 'black'
+names(keyvals.colour)[keyvals.colour == 'light blue'] <- 'down_nonsig'
+names(keyvals.colour)[keyvals.colour == 'pink'] <- 'up_nonsig'
+names(keyvals.colour)[keyvals.colour == 'grey'] <- 'non_sig'
+names(keyvals.colour)[keyvals.colour == 'red'] <- 'up_sig'
+names(keyvals.colour)[keyvals.colour == 'blue2'] <- 'down_sig'
+names(keyvals.colour)[keyvals.colour == 'black'] <- 'not_sig'
+volcano <- EnhancedVolcano(Memory_CD8T_cells, lab = rownames(Memory_CD8T_cells), x = 'avg_log2FC', y = 'p_val', title = 'Naive CD4T DE',
+    pCutoff = 0.05,
+    hline = 1.45e-6,
+    FCcutoff = 0.25,
+    pointSize = 4.0,
+    selectLab = c('FOS', 'JUNB', 'IL32', 'GZMB', 'GZMH', 'EGR1'),
+    labSize = 4.0,
+    labCol = 'black',
+    boxedLabels = TRUE,
+    colCustom = keyvals.colour,
+    colAlpha = 0.6,
+    drawConnectors = TRUE,
+    widthConnectors = 0.9,
+    xlab = bquote(~Log[2]~"Fold Change"),
+    ylab = bquote(~-Log[10]~"P value"))
+volcano +
+  ggplot2::coord_cartesian(xlim=c(-2, 2))
+
+
+```
+
+
+
+#### Integrate data for STAT6 PBMC samples
+
+```{r}
+
+hcp <- Read10X(data.dir = "C:/AMA/STAT6/RNAseq/HKseq/scRNAseq/daniel_4_samples_possible_hcp_gex-20220727T023632Z-001/daniel_4_samples_possible_hcp_gex/outs/filtered_feature_bc_matrix")
+hcp_pbmc <- CreateSeuratObject(counts = hcp, project = "S6P_HK")
+hcp_pbmc$subject <- "healthy"
+
+s6p <- Read10X(data.dir = "C:/AMA/STAT6/RNAseq/HKseq/scRNAseq/daniel_4_samples_possible_s6p_gex-20220727T022630Z-001/daniel_4_samples_possible_s6p_gex/outs/filtered_feature_bc_matrix/")
+s6p_pbmc <- CreateSeuratObject(counts = s6p, project = "S6P_HK")
+s6p_pbmc$subject <- "patient"
+
+s6p_post <- Read10X(data.dir = "C:/AMA/STAT6/RNAseq/HKseq/scRNAseq/post_dup_patient_PBMCs/filtered_feature_bc_matrix/")
+s6p_post_pbmc <- CreateSeuratObject(counts = s6p_post, project = "S6P_HK")
+s6p_post_pbmc$subject <- "patient_postdup"
+
+comb <- merge(hct_pbmc, y=c(s6t_pbmc, s6t_post_pbmc), add.cell.ids = c("HC", "S6T", "S6T_post"))
+
+s6.list <- SplitObject(comb, split.by = "subject")
+
+for (i in 1:length(s6.list)) {
+  counts <- GetAssayData(s6.list[[i]], assay = "RNA")
+  counts <- counts[-(which(rownames(counts) %in% c('HBB','HBA1','HBA2','HBG2','HBG1','HBD'))),]
+  counts <- counts[-grep("RPS",rownames(counts)),]
+  counts <- counts[-grep("RPL",rownames(counts)),]
+  counts <- counts[-grep("MT-",rownames(counts)),]
+  counts <- counts[-grep("LINC",rownames(counts)),]
+  s6.list[[i]] <- subset(s6.list[[i]], features = rownames(counts))
+  s6.list[[i]] <- NormalizeData(s6.list[[i]])
+  s6.list[[i]] <- FindVariableFeatures(
+    s6.list[[i]], selection.method = "vst",
+    nfeatures = 2000
+  )
+}
+
+features <- SelectIntegrationFeatures(object.list = s6.list)
+anchors <- FindIntegrationAnchors(object.list = s6.list, anchor.features = features)
+integrated_data <- IntegrateData(anchorset = anchors)
+
+DefaultAssay(integrated_data) <- "integrated"
+integrated_data <- ScaleData(integrated_data)
+integrated_data <- RunPCA(integrated_data, npcs = 30)
+integrated_data <- RunUMAP(integrated_data, reduction = "pca", dims = 1:30)
+integrated_data <- FindNeighbors(integrated_data, reduction = "pca", dims = 1:30)
+integrated_data <- FindClusters(integrated_data, resolution = 0.5)
+
+DimPlot(integrated_data, label = T, repel = F, label.size = 4, split.by = "subject")
+
+
+integrated_data.sc <- as.SingleCellExperiment(integrated_data, assay = "RNA")
+nh.ref <- celldex::NovershternHematopoieticData()
+#im.ref <- celldex::DatabaseImmuneCellExpressionData()
+
+pred.nh <- SingleR(test = integrated_data.sc, ref = nh.ref, labels = nh.ref$label.main)
+pred.nh.f <- SingleR(test = integrated_data.sc, ref = nh.ref, labels = nh.ref$label.fine)
+if (identical(rownames(pred.nh), colnames(integrated_data.sc))) {
+  integrated_data.sc$NH <- pred.nh$labels
+  integrated_data.sc$NH.fine <- pred.nh.f$labels
+}
+ct <- data.frame(cbind(NH = integrated_data.sc$NH,
+                       NH.fine = integrated_data.sc$NH.fine)) 
+rownames(ct) <- colnames(integrated_data)
+integrated_data <- AddMetaData(integrated_data, ct)
+
+#pred.im <- SingleR(test = integrated_data.sc, ref = im.ref, labels = im.ref$label.main)
+#pred.im.f <- SingleR(test = integrated_data.sc, ref = im.ref, labels = im.ref$label.fine)
+#if (identical(rownames(pred.im), colnames(integrated_data.sc))) {
+#integrated_data.sc$IM <- pred.im$labels
+#  integrated_data.sc$IM.fine <- pred.im.f$labels
+#}
+#ct2 <- data.frame(cbind(IM = integrated_data.sc$IM,
+#                       IM.fine = integrated_data.sc$IM.fine)) 
+#rownames(ct2) <- colnames(integrated_data)
+#integrated_data <- AddMetaData(integrated_data, ct2)
+
+integrated_data$NH.fine[integrated_data$NH.fine %in% c("Mature B cells class switched", "Mature B cells class able to switch")] <- "Mature B cells"
+integrated_data$NH.fine[integrated_data$NH.fine %in% c("CD4+ Central Memory", "CD4+ Effector Memory")] <- "CD4+ Memory"
+integrated_data$NH.fine[integrated_data$NH.fine %in% c("CD8+ Central Memory", "CD8+ Effector Memory", "CD8+ Effector Memory RA")] <- "CD8+ Memory"
+integrated_data$NH.fine[integrated_data$NH.fine %in% c("Erythroid_CD34- CD71+ GlyA-", "Erythroid_CD34- CD71+ GlyA+", "Erythroid_CD34- CD71- GlyA+", "Erythroid_CD34- CD71lo GlyA+", "Erythroid_CD34+ CD71+ GlyA-")] <- "Erythroid cells"
+integrated_data$NH.fine[integrated_data$NH.fine %in% c("Mature NK cells_CD56- CD16+ CD3-", "Mature NK cells_CD56- CD16- CD3-", "Mature NK cells_CD56+ CD16+ CD3-")] <- "NK cells"
+integrated_data$NH.fine[integrated_data$NH.fine %in% c("Granulocytes (Neutrophilic Metamyelocytes)", "Granulocytes (Neutrophils)", "Basophils")] <- "Other Granulocytes"
+integrated_data$NH.fine[integrated_data$NH.fine %in% c("Colony Forming Unit-Granulocytes", "Colony Forming Unit-Megakaryocytic", "Colony Forming Unit-Monocytes", "Common myeloid progenitors", "Hematopoietic stem cells_CD133+ CD34dim", "Early B cells", "NK T cells", "Pro B cells", "Megakaryocytes")] <- "Progenitors"
+integrated_data$NH.fine[integrated_data$NH.fine %in% c("Naive CD8+ T cells")] <- "CD8T Naive"
+integrated_data$NH.fine[integrated_data$NH.fine %in% c("CD8+ Memory")] <- "Mem CD8T"
+
+integrated_data$label <- integrated_data$NH
+integrated_data$label.fine <- integrated_data$NH.fine
+
+#integrated_data$label2 <- integrated_data$IM
+#$label2.fine <- integrated_data$IM.fine
+
+DimPlot(integrated_data, group.by = "label.fine", label = T, repel = F, label.size = 4, split.by = "subject")
+
+```
+
+
+
+
+
+# Compare post dupilumab patient 6 vs new healthy control (same kit as post-dupilumab)
+
+```{r}
+hcp <- Read10X(data.dir = "C:/AMA/STAT6/RNAseq/HKseq/scRNAseq/new_hc_pbmc_gex/filtered_feature_bc_matrix")
+hcp_pbmc <- CreateSeuratObject(counts = hcp, project = "S6P_HK", min.features = 200)
+hcp_pbmc[["percent.mt"]] <- PercentageFeatureSet(hcp_pbmc, pattern = "^MT-")
+hcp_pbmc[["percent.HBB"]] <- PercentageFeatureSet(hcp_pbmc, pattern = "^HBB")
+#plot1 <- FeatureScatter(hcp_pbmc, feature1 = "nFeature_RNA", feature2 = "percent.mt")
+#plot1
+#plot1 <- FeatureScatter(hcp_pbmc, feature1 = "nFeature_RNA", feature2 = "percent.HBB")
+#plot1 <- FeatureScatter(hcp_pbmc, feature1 = "nFeature_RNA", feature2 = "percent.HBB")
+#plot1
+hcp_pbmc <- subset(hcp_pbmc, subset = nFeature_RNA > 500 & nFeature_RNA < 5000 & percent.mt < 7.5 & percent.HBB < 0.01)
+counts <- GetAssayData(hcp_pbmc, assay = "RNA")
+counts <- counts[-(which(rownames(counts) %in% c('HBB','HBA1','HBA2','HBG2','HBG1','HBD'))),]
+counts <- counts[-grep("RPS",rownames(counts)),]
+counts <- counts[-grep("RPL",rownames(counts)),]
+counts <- counts[-grep("MT-",rownames(counts)),]
+counts <- counts[-grep("LINC",rownames(counts)),]
+hcp_pbmc <- subset(hcp_pbmc, features = rownames(counts))
+hcp_pbmc$subject <- "healthy"
+
+
+s6p <- Read10X(data.dir = "C:/AMA/STAT6/RNAseq/HKseq/scRNAseq/post_dup_patient_PBMCs/filtered_feature_bc_matrix")
+s6p_pbmc <- CreateSeuratObject(counts = s6p, project = "S6P_HK", min.features = 200)
+s6p_pbmc[["percent.mt"]] <- PercentageFeatureSet(s6p_pbmc, pattern = "^MT-")
+s6p_pbmc[["percent.HBB"]] <- PercentageFeatureSet(s6p_pbmc, pattern = "^HBB")
+#plot1 <- FeatureScatter(s6p_pbmc1, feature1 = "nFeature_RNA", feature2 = "percent.mt")
+#plot1 <- FeatureScatter(s6p_pbmc, feature1 = "nFeature_RNA", feature2 = "percent.HBB")
+#plot1 <- FeatureScatter(s6p_pbmc, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+#plot1
+s6p_pbmc <- subset(s6p_pbmc, subset = nFeature_RNA > 500 & nFeature_RNA < 5000 & percent.mt < 7.5 & percent.HBB < 0.01)
+counts <- GetAssayData(s6p_pbmc, assay = "RNA")
+counts <- counts[-(which(rownames(counts) %in% c('HBB','HBA1','HBA2','HBG2','HBG1','HBD'))),]
+counts <- counts[-grep("RPS",rownames(counts)),]
+counts <- counts[-grep("RPL",rownames(counts)),]
+counts <- counts[-grep("MT-",rownames(counts)),]
+counts <- counts[-grep("LINC",rownames(counts)),]
+s6p_pbmc <- subset(s6p_pbmc, features = rownames(counts))
+s6p_pbmc$subject <- "patient"
+
+
+comb <- merge(hcp_pbmc, y = c(s6p_pbmc), add.cell.ids = c("HC", "S6P"))
+comb <- FindVariableFeatures(comb)
+comb <- ScaleData(comb)
+comb <- RunPCA(comb)
+comb <- RunUMAP(comb, dims = 1:20)
+comb <- FindNeighbors(comb)
+comb <- FindClusters(comb)
+
+DimPlot(comb, label = T, repel = F, label.size = 4, split.by = "subject")
+
+comb.sc <- as.SingleCellExperiment(comb, assay = "RNA")
+nh.ref <- celldex::NovershternHematopoieticData()
+
+pred.nh <- SingleR(test = comb.sc, ref = nh.ref, labels = nh.ref$label.main)
+pred.nh.f <- SingleR(test = comb.sc, ref = nh.ref, labels = nh.ref$label.fine)
+if (identical(rownames(pred.nh), colnames(comb.sc))) {
+  comb.sc$NH <- pred.nh$labels
+  comb.sc$NH.fine <- pred.nh.f$labels
+}
+ct <- data.frame(cbind(NH = comb.sc$NH,
+                       NH.fine = comb.sc$NH.fine)) 
+rownames(ct) <- colnames(comb)
+comb <- AddMetaData(comb, ct)
+
+
+comb$NH.fine[comb$NH.fine %in% c("Mature B cells class switched", "Mature B cells class able to switch")] <- "Mature B cells"
+comb$NH.fine[comb$NH.fine %in% c("CD4+ Central Memory", "CD4+ Effector Memory")] <- "CD4+ Memory"
+comb$NH.fine[comb$NH.fine %in% c("CD8+ Central Memory", "CD8+ Effector Memory", "CD8+ Effector Memory RA")] <- "CD8+ Memory"
+comb$NH.fine[comb$NH.fine %in% c("Erythroid_CD34- CD71+ GlyA-", "Erythroid_CD34- CD71+ GlyA+", "Erythroid_CD34- CD71- GlyA+", "Erythroid_CD34- CD71lo GlyA+", "Erythroid_CD34+ CD71+ GlyA-")] <- "Erythroid cells"
+comb$NH.fine[comb$NH.fine %in% c("Granulocytes (Neutrophilic Metamyelocytes)", "Granulocytes (Neutrophils)", "Basophils")] <- "Other Granulocytes"
+comb$NH.fine[comb$NH.fine %in% c("Colony Forming Unit-Granulocytes", "Colony Forming Unit-Megakaryocytic", "Colony Forming Unit-Monocytes", "Common myeloid progenitors", "Hematopoietic stem cells_CD133+ CD34dim", "Early B cells", "NK T cells", "Pro B cells", "Megakaryocytes")] <- "Progenitors"
+comb$NH.fine[comb$NH.fine %in% c("Naive CD8+ T cells")] <- "CD8T Naive"
+comb$NH.fine[comb$NH.fine %in% c("CD8+ Memory")] <- "Mem CD8T"
+
+comb$label <- comb$NH
+comb$label.fine <- comb$NH.fine
+
+
+
+DimPlot(comb, group.by = "label.fine", label = T, repel = F, label.size = 4, split.by = "subject")
+
+data <- SplitObject(comb, split.by = "subject")
+
+
+comb <- RenameIdents(comb, `8` = "CD14 Mono", `7` = "CD14 Mono")
+comb <- RenameIdents(comb, `14` = "Progenitors", `12` = "Progenitors")
+comb <- RenameIdents(comb, `17` = "CD4+ Mem", `10` = "CD4+ Mem", `3` = "CD4+ Mem", `9` = "CD4+ Mem")
+comb <- RenameIdents(comb, `18` = "DC1")
+comb <- RenameIdents(comb, `15` = "DC2")
+comb <- RenameIdents(comb, `19` = "pDC")
+comb <- RenameIdents(comb, `11` = "CD8+ Mem", `16` = "CD8+ Mem", `2` = "CD8+ Mem", `6` = "CD8+ Mem")
+comb <- RenameIdents(comb, `4` = "NK cells")
+comb <- RenameIdents(comb, `5` = "Naive B", `13` = "Naive B")
+comb <- RenameIdents(comb, `0` = "Naive CD4+ T cells", `1` = "Naive CD4+ T cells")
+comb <- RenameIdents(comb, `20` = "other")
+
+
+comb$final.ident <- as.character(comb@active.ident)
+comb$final.ident[comb$label.fine == "NK cells"] <- "NK cells"
+comb@active.ident <- as.factor(comb$final.ident)
+
+comb$final.ident1 <- as.character(comb@active.ident)
+comb$final.ident1[comb$label.fine == "CD8T Naive"] <- "CD8T Naive"
+comb@active.ident <- as.factor(comb$final.ident1)
+
+comb$final.ident2 <- as.character(comb@active.ident)
+comb$final.ident2[comb$label.fine == "Mature B cells"] <- "Mem B cells"
+comb@active.ident <- as.factor(comb$final.ident2)
+
+comb$final.ident3 <- as.character(comb@active.ident)
+comb$final.ident3[comb$label.fine == "Naive B cells"] <- "Naive B"
+comb@active.ident <- as.factor(comb$final.ident3)
+
+comb$final.ident4 <- as.character(comb@active.ident)
+comb$final.ident4[comb$label.fine == "DC1"] <- "DC1"
+comb@active.ident <- as.factor(comb$final.ident4)
+
+comb$final.ident5 <- as.character(comb@active.ident)
+comb$final.ident5[comb$label.fine == "DC2"] <- "DC2"
+comb@active.ident <- as.factor(comb$final.ident5)
+
+memBmarkers <- subset(x = comb, subset = IGHE > 0 | IGHG1 > 0 | IGHG2 > 0 | IGHG3 > 0 | IGHG4 > 0, idents = "Naive B")
+comb$final.ident2[colnames(comb) %in% colnames(memBmarkers)] <- "Mem B cells"
+comb@active.ident <- as.factor(comb$final.ident2)
+
+comb <- RenameIdents(comb, `Naive B` = "B Naive cells")
+
+
+plot1 <- DimPlot(comb, split.by = "subject", label.size = 4)
+plot1[[1]]$layers[[1]]$aes_params$alpha <- 0.5
+plot1
+
+
+features <- c("STAT6", "XBP1", "MAL", "SOCS3", "IL4R", "GATA3", "IGHE", "IGHG3", "CD83", "CLECL1", "IL1B", "NLRP3", "CXCL8")
+exp_mat <- as.matrix(comb[["RNA"]]@data[features,])
+meta <- cbind(Ident = as.character(comb@active.ident), Subject = comb$subject) %>% 
+  cbind(., as.data.frame(t(exp_mat)))
+meta <- pivot_longer(meta, STAT6:CXCL8, names_to = "Gene", values_to = "Expression")
+head(meta)
+meta_summary <- meta %>%
+  group_by(Ident, Subject, Gene) %>%
+  summarise(Avg = mean(Expression),
+            Pct = sum(Expression > 0) / length(Expression) * 100) %>% 
+  filter(., !Ident %in% c("Other", "Progenitors")) %>% 
+  transform(., Ident = factor(Ident, levels = c("B Naive cells", "Mem B cells", "Naive CD4+ T cells", "CD4+ Mem", "CD8T Naive", "CD8+ Mem", "NK cells", "CD14 Mono", "DC1", "DC2"))) %>% 
+  transform(., Gene = factor(Gene, levels = features))
+
+dot_plot <- ggplot(meta_summary, aes(x = Gene, y = Subject)) +
+  geom_point(aes(size = Pct, fill = Avg), color="gray", shape=21) +
+  scale_size("% detected", range = c(0,6)) +
+  scale_fill_gradientn(colours = pals::kovesi.linear_bmy_10_95_c78(100),
+                       guide = guide_colorbar(ticks.colour = "black",
+                                              frame.colour = "black"),
+                       limits = c(0, 3),
+                       oob = scales::squish,
+                       name = "Average\nexpression") +
+  theme_bw() +
+  theme(axis.text.x = element_text(size = 10, angle = 45, hjust = 1, color="black"),
+        axis.text.y = element_text(size = 10, color="black"),
+        axis.title = element_blank(), 
+        strip.text = element_text(size = 9)) + 
+  facet_wrap(Ident ~ ., ncol = 1, strip.position = "right", 
+             labeller = labeller(Ident = label_wrap_gen(8)))
+
+dot_plot
+
+```
+

@@ -22,7 +22,7 @@ library(pals)
 set.seed(2)
 ```
 
-### Import raw data
+### PBMCs analysis
 
 ```{r}
 hcp <- Read10X(data.dir = "C:/AMA/STAT6/RNAseq/HKseq/scRNAseq/daniel_4_samples_possible_hcp_gex-20220727T023632Z-001/daniel_4_samples_possible_hcp_gex/outs/filtered_feature_bc_matrix")
